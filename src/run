@@ -1,0 +1,202 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Take a CSV file containing title and URIs associated to a DOI and submit new
+findings to the identifier translation service.
+
+usage: python run
+
+(c) Javier Arias, Open Book Publishers, April 2019
+Use of this software is governed by the terms of the MIT license
+
+Dependencies:
+  httplib2==0.12.1
+  pandas==0.23.4
+"""
+
+import os
+import sys
+import json
+import pandas
+import httplib2
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+CSV_LOC_URL     = os.environ['CSV_LOC_URL']
+CSV_ISBN_HEAD   = os.environ['CSV_ISBN_HEAD']
+CSV_TITLE_HEAD  = os.environ['CSV_TITLE_HEAD']
+CSV_ID_HEAD     = os.environ['CSV_ID_HEAD']
+CSV_URL_HEAD    = os.environ['CSV_URL_HEAD']
+CSV_DOI_HEAD    = os.environ['CSV_DOI_HEAD']
+CSV_TYPE_HEAD   = os.environ['CSV_TYPE_HEAD']
+CSV_PARENT_HEAD = os.environ['CSV_PARENT_HEAD']
+DOI_URI_PREFIX  = os.environ['DOI_URI_PREFIX']
+ID_URI_PREFIX   = os.environ['ID_URI_PREFIX']
+DEFAULT_TYPE    = os.environ['DEFAULT_TYPE']
+CHAPTER_TYPE    = os.environ['CHAPTER_TYPE']
+URI_API_ENDP    = os.environ['URI_API_ENDP']
+URI_API_USER    = os.environ['URI_API_USER']
+URI_API_PASS    = os.environ['URI_API_PASS']
+AUTH_API_ENDP   = os.environ['AUTH_API_ENDP']
+URI_API_WORKS   = os.environ['URI_API_WORKS']
+URI_API_URIS    = os.environ['URI_API_URIS']
+URI_API_TITLES  = os.environ['URI_API_TITLES']
+URI_API_REL     = os.environ['URI_API_REL']
+CONTENT_TYPE    = {'content-type': 'application/json'}
+WORK_TYPES      = {'book': DEFAULT_TYPE, 'chapter': CHAPTER_TYPE}
+
+
+def get_token(url, email, passwd):
+    h = httplib2.Http()
+    credentials = {'email': email, 'password': passwd}
+    headers = CONTENT_TYPE
+    res, content = h.request(url, 'POST', json.dumps(credentials), headers)
+    try:
+        assert res.status == 200
+    except AssertionError:
+        raise ValueError(content)
+    return json.loads(content)['data'][0]['token']
+
+
+def get_from_uri(uri):
+    url = URI_API_ENDP + "?uri=" + uri
+    h = httplib2.Http()
+    headers = AUTHORIZATION
+    res, content = h.request(url, 'GET', headers=headers)
+    if res.status != 200:
+        raise AssertionError
+    return json.loads(content)['data']
+
+
+def is_oapenid_unique(oapenid):
+    url_string = '%s?uri=%s&filter=uri_scheme:tag:oapen.org,2008&strict=true'
+    url = url_string % (URI_API_ENDP, oapenid)
+    h = httplib2.Http()
+    headers = AUTHORIZATION
+    res, content = h.request(url, 'GET', headers=headers)
+    try:
+        assert res.status == 200
+    except AssertionError:
+        r = json.loads(content)
+        m = "%s: %s" % (r['message'], r['parameters']['uri'])
+        if r['message'] != 'No records have matched your search criteria.':
+            print(m, file=sys.stderr)
+            return False
+    return True
+
+
+def submit(url, data):
+    h = httplib2.Http()
+    headers = {**CONTENT_TYPE, **AUTHORIZATION}
+    res, content = h.request(url, 'POST', json.dumps(data), headers)
+    try:
+        assert res.status == 200
+    except AssertionError:
+        sys.stderr.write(content)
+        sys.exit(1)
+
+
+def get_uuid_from_uris(uris):
+    uuid = ''
+    for uri in uris:
+        assert uuid == '' or uuid == uri['work']['UUID']
+        uuid = uri['work']['UUID']
+    return uuid
+
+
+def get_uri_from_uris(uri, uris):
+    for e in uris:
+        if e['URI'] == uri:
+            return e['URI']
+    return ''
+
+
+def standarise_uri(uri, canonical):
+    return {'URI': uri, 'canonical': canonical}
+
+
+def standarise_uris(uris):
+    out = []
+    for i, val in enumerate(uris):
+        out.append(standarise_uri(val.strip(), "false"))
+    return out
+
+
+def get_csv():
+    return urllib.request.urlopen(CSV_LOC_URL)
+
+
+def process_csv(mapping_file):
+    buff = pandas.read_csv(mapping_file, encoding="utf-8", header=0, sep=',')
+    for row in buff.index:
+        title   = buff.at[row, CSV_TITLE_HEAD].strip()
+        doi     = DOI_URI_PREFIX + buff.at[row, CSV_DOI_HEAD].strip()
+        oapenid = ID_URI_PREFIX + buff.at[row, CSV_ID_HEAD].strip()
+        isbn    = buff.at[row, CSV_ISBN_HEAD].strip().split('|')
+        dtype   = WORK_TYPES[buff.at[row, CSV_TYPE_HEAD].strip()]
+        parent  = ID_URI_PREFIX + buff.at[row, CSV_PARENT_HEAD].strip()
+        url     = buff.at[row, CSV_URL_HEAD].strip().split('|')
+
+        if not title or not oapenid or not is_oapenid_unique(oapenid):
+            continue
+
+        input_uris = [standarise_uri(oapenid, "true")]
+        if doi:
+            input_uris.append(standarise_uri(doi, "true"))
+        if isbn:
+            input_uris += standarise_uris(isbn)
+        if url:
+            input_uris += standarise_uris(url)
+
+        try:
+            uris = get_from_uri(oapenid)
+            uuid = get_uuid_from_uris(uris)
+            if not uris or not uuid:
+                raise AssertionError
+        except AssertionError:
+            # add new work
+            work = {'title': [title], 'type': dtype, 'URI': input_uris}
+            submit(URI_API_WORKS, work)
+            continue
+
+        # insert input URIs if not already in database
+        for uri in input_uris:
+            candidate = get_uri_from_uris(uri['URI'], uris)
+            if candidate != '':
+                continue
+            new_uri = {'UUID': uuid, 'URI': uri['URI'],
+                       'canonical': uri['canonical']}
+            submit(URI_API_URIS, new_uri)
+
+        # now submit the input title in case it's been updated
+        submit(URI_API_TITLES, {'UUID': uuid, 'title': title})
+
+        # lastly, add the parent relationship if there's one
+        try:
+            if not uuid or not parent:
+                raise AssertionError
+            parent_uris = get_from_uri(parent)
+            parent_uuid = parent_uris[0]['work']['UUID']
+            relation = {'parent_UUID': parent_uuid, 'child_UUID': uuid}
+            submit(URI_API_REL, relation)
+        except (AssertionError, IndexError, KeyError):
+            continue
+
+
+def run():
+    if not API_JWTOKEN:
+        raise AssertionError('Missing JWT. Check you can access AUTH_API_ENDP')
+    mapping_file = get_csv()
+    if not mapping_file:
+        raise AssertionError('Missing CSV file. Check CSV_LOC_URL')
+    process_csv(mapping_file)
+
+
+API_JWTOKEN = get_token(AUTH_API_ENDP, URI_API_USER, URI_API_PASS)
+AUTHORIZATION = {'Authorization': 'Bearer ' + API_JWTOKEN}
+
+
+if __name__ == '__main__':
+    run()
