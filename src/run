@@ -130,6 +130,7 @@ def get_csv():
 
 def process_csv(mapping_file):
     buff = pandas.read_csv(mapping_file, encoding="utf-8", header=0, sep=',')
+    buff.columns = buff.columns.str.strip()  # ridiculous
     for row in buff.index:
         title   = buff.at[row, CSV_TITLE_HEAD].strip()
         doi     = DOI_URI_PREFIX + buff.at[row, CSV_DOI_HEAD].strip()
