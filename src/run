@@ -14,6 +14,7 @@ Dependencies:
   pandas==0.23.4
 """
 
+import re
 import os
 import sys
 import json
@@ -33,6 +34,7 @@ CSV_DOI_HEAD    = os.environ['CSV_DOI_HEAD']
 CSV_TYPE_HEAD   = os.environ['CSV_TYPE_HEAD']
 CSV_PARENT_HEAD = os.environ['CSV_PARENT_HEAD']
 DOI_URI_PREFIX  = os.environ['DOI_URI_PREFIX']
+ISBN_URI_PREFIX = os.environ['ISBN_URI_PREFIX']
 ID_URI_PREFIX   = os.environ['ID_URI_PREFIX']
 DEFAULT_TYPE    = os.environ['DEFAULT_TYPE']
 CHAPTER_TYPE    = os.environ['CHAPTER_TYPE']
@@ -56,7 +58,7 @@ def get_token(url, email, passwd):
     try:
         assert res.status == 200
     except AssertionError:
-        raise ValueError(content)
+        raise ValueError(content.decode('utf-8'))
     return json.loads(content)['data'][0]['token']
 
 
@@ -67,7 +69,7 @@ def get_from_uri(uri):
     res, content = h.request(url, 'GET', headers=headers)
     if res.status != 200:
         raise AssertionError
-    return json.loads(content)['data']
+    return json.loads(content.decode('utf-8'))['data']
 
 
 def is_oapenid_unique(oapenid):
@@ -79,7 +81,7 @@ def is_oapenid_unique(oapenid):
     try:
         assert res.status == 200
     except AssertionError:
-        r = json.loads(content)
+        r = json.loads(content.decode('utf-8'))
         m = "%s: %s" % (r['message'], r['parameters']['uri'])
         if r['message'] != 'No records have matched your search criteria.':
             print(m, file=sys.stderr)
@@ -91,11 +93,9 @@ def submit(url, data):
     h = httplib2.Http()
     headers = {**CONTENT_TYPE, **AUTHORIZATION}
     res, content = h.request(url, 'POST', json.dumps(data), headers)
-    try:
-        assert res.status == 200
-    except AssertionError:
-        sys.stderr.write(content)
-        sys.exit(1)
+    if res.status != 200:
+        sys.stderr.write(content.decode('utf-8'))
+        raise AssertionError
 
 
 def get_uuid_from_uris(uris):
@@ -128,17 +128,69 @@ def get_csv():
     return urllib.request.urlopen(CSV_LOC_URL)
 
 
+def remove_nan(string):
+    string = string.strip()
+    return string.replace('nan', '') if len(string) == 3 else string
+
+
+def sanitise_title(title):
+    title = remove_nan(title)
+    return title if title else ""
+
+
+def sanitise_doi(prefix, doi):
+    doi = re.sub(r'(.*)doi.org\/', '', doi.strip())
+    doi = remove_nan(doi)
+    return prefix + doi if doi else ""
+
+
+def sanitise_id(prefix, oapenid):
+    oapenid = remove_nan(oapenid)
+    return prefix + oapenid if oapenid else ""
+
+
+def sanitise_type(types, dtype):
+    dtype = remove_nan(dtype)
+    return types[dtype] if dtype else ""
+
+
+def sanitise_parent(prefix, parent):
+    parent = remove_nan(parent)
+    return prefix + parent if parent else ""
+
+
+def sanitise_url(url_string):
+        urls = url_string.split('|')
+        return [remove_nan(x) for x in urls
+                if remove_nan(x) and bool(urllib.parse.urlparse(x).scheme)]
+
+
+def sanitise_isbn(prefix, isbn_string):
+        isbns = isbn_string.split('|')
+        return [prefix + remove_nan(x).replace('-', '')
+                for x in isbns if remove_nan(x)]
+
+
 def process_csv(mapping_file):
     buff = pandas.read_csv(mapping_file, encoding="utf-8", header=0, sep=',')
     buff.columns = buff.columns.str.strip()  # ridiculous
+    buff.fillna("")  # Replace NA with a scalar value
     for row in buff.index:
-        title   = buff.at[row, CSV_TITLE_HEAD].strip()
-        doi     = DOI_URI_PREFIX + buff.at[row, CSV_DOI_HEAD].strip()
-        oapenid = ID_URI_PREFIX + buff.at[row, CSV_ID_HEAD].strip()
-        isbn    = buff.at[row, CSV_ISBN_HEAD].strip().split('|')
-        dtype   = WORK_TYPES[buff.at[row, CSV_TYPE_HEAD].strip()]
-        parent  = ID_URI_PREFIX + buff.at[row, CSV_PARENT_HEAD].strip()
-        url     = buff.at[row, CSV_URL_HEAD].strip().split('|')
+        csv_title   = str(buff.at[row, CSV_TITLE_HEAD])
+        csv_doi     = str(buff.at[row, CSV_DOI_HEAD])
+        csv_oapenid = str(buff.at[row, CSV_ID_HEAD])
+        csv_dtype   = str(buff.at[row, CSV_TYPE_HEAD])
+        csv_parent  = str(buff.at[row, CSV_PARENT_HEAD])
+        csv_url     = str(buff.at[row, CSV_URL_HEAD])
+        csv_isbn    = str(buff.at[row, CSV_ISBN_HEAD])
+
+        title   = sanitise_title(csv_title)
+        doi     = sanitise_doi(DOI_URI_PREFIX, csv_doi)
+        oapenid = sanitise_id(ID_URI_PREFIX, csv_oapenid)
+        dtype   = sanitise_type(WORK_TYPES, csv_dtype)
+        parent  = sanitise_parent(ID_URI_PREFIX, csv_parent)
+        url     = sanitise_url(csv_url)
+        isbn    = sanitise_isbn(ISBN_URI_PREFIX, csv_isbn)
 
         if not title or not oapenid or not is_oapenid_unique(oapenid):
             continue
@@ -154,12 +206,16 @@ def process_csv(mapping_file):
         try:
             uris = get_from_uri(oapenid)
             uuid = get_uuid_from_uris(uris)
-            if not uris or not uuid:
-                raise AssertionError
-        except AssertionError:
+        except BaseException:
+            uris = uuid = None
+            pass
+        if not uris or not uuid:
             # add new work
             work = {'title': [title], 'type': dtype, 'URI': input_uris}
-            submit(URI_API_WORKS, work)
+            try:
+                submit(URI_API_WORKS, work)
+            except BaseException:
+                pass  # don't exit if submission fails
             continue
 
         # insert input URIs if not already in database
@@ -169,7 +225,10 @@ def process_csv(mapping_file):
                 continue
             new_uri = {'UUID': uuid, 'URI': uri['URI'],
                        'canonical': uri['canonical']}
-            submit(URI_API_URIS, new_uri)
+            try:
+                submit(URI_API_URIS, new_uri)
+            except BaseException:
+                continue
 
         # now submit the input title in case it's been updated
         submit(URI_API_TITLES, {'UUID': uuid, 'title': title})
