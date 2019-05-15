@@ -133,6 +133,14 @@ def remove_nan(string):
     return string.replace('nan', '') if len(string) == 3 else string
 
 
+def remove_hyphens(string):
+    codes = [u"\u002d", u"\u2013", u"\u00ad", u"\u02d7", u"\u0320", u"\u2010",
+             u"\u2012", u"\u2011", u"\u2014", u"\u2015"]
+    for c in codes:
+        string.replace(c, "")
+    return string
+
+
 def sanitise_title(title):
     title = remove_nan(title)
     return title if title else ""
@@ -167,7 +175,7 @@ def sanitise_url(url_string):
 
 def sanitise_isbn(prefix, isbn_string):
         isbns = isbn_string.split('|')
-        return [prefix + remove_nan(x).replace('-', '')
+        return [prefix + remove_hyphens(remove_nan(x))
                 for x in isbns if remove_nan(x)]
 
 
