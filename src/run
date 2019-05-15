@@ -176,7 +176,7 @@ def sanitise_url(url_string):
 
 
 def sanitise_isbn(prefix, isbn_string):
-        isbns = isbn_string.split('|')
+        isbns = remove_hyphens(isbn_string).split('|')
         return [prefix + remove_hyphens(remove_nan(x))
                 for x in isbns if remove_nan(x)]
 
