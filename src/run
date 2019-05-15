@@ -94,7 +94,7 @@ def submit(url, data):
     headers = {**CONTENT_TYPE, **AUTHORIZATION}
     res, content = h.request(url, 'POST', json.dumps(data), headers)
     if res.status != 200:
-        sys.stderr.write(content.decode('utf-8'))
+        print(content.decode('utf-u'), file=sys.stderr)
         raise AssertionError
 
 
