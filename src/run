@@ -136,9 +136,10 @@ def remove_nan(string):
 def remove_hyphens(string):
     codes = [u"\u002D", u"\u058A", u"\u05BE", u"\u1400", u"\u1806", u"\u2011",
              u"\u2012", u"\u2013", u"\u2014", u"\u2015", u"\u2E3A", u"\u2E3B",
-             u"\uFE58", u"\uFE63", u"\uFF0D", u"\u00AD", u"\u02D7", u"\u0320"]
+             u"\uFE58", u"\uFE63", u"\uFF0D", u"\u00AD", u"\u02D7", u"\u0320",
+             u"\u2010"]
     for c in codes:
-        string.replace(c, "")
+        string = string.replace(c, "")
     return string
 
 
