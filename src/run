@@ -46,6 +46,8 @@ URI_API_WORKS   = os.environ['URI_API_WORKS']
 URI_API_URIS    = os.environ['URI_API_URIS']
 URI_API_TITLES  = os.environ['URI_API_TITLES']
 URI_API_REL     = os.environ['URI_API_REL']
+USER_AGENT      = os.environ['USER_AGENT']
+VALID_DOIS_ONLY = os.environ['VALID_DOIS_ONLY'] in ('true', 'True', 1, True)
 CONTENT_TYPE    = {'content-type': 'application/json'}
 WORK_TYPES      = {'book': DEFAULT_TYPE, 'chapter': CHAPTER_TYPE}
 
@@ -181,6 +183,15 @@ def sanitise_isbn(prefix, isbn_string):
                 for x in isbns if remove_nan(x)]
 
 
+def is_doi_valid(prefix, doi):
+    if doi == "":
+        return False
+    url = 'https://doi.org/api/handles/' + doi.replace(prefix, '')
+    h = httplib2.Http()
+    res, content = h.request(url, 'GET', headers={'User-Agent': USER_AGENT})
+    return res.status == 200
+
+
 def process_csv(mapping_file):
     buff = pandas.read_csv(mapping_file, encoding="utf-8", header=0, sep=',')
     buff.columns = buff.columns.str.strip()  # ridiculous
@@ -203,6 +214,9 @@ def process_csv(mapping_file):
         isbn    = sanitise_isbn(ISBN_URI_PREFIX, csv_isbn)
 
         if not title or not oapenid or not is_oapenid_unique(oapenid):
+            continue
+
+        if VALID_DOIS_ONLY and not is_doi_valid(DOI_URI_PREFIX, doi):
             continue
 
         input_uris = [standarise_uri(oapenid, "true")]
